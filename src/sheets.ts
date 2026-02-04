@@ -279,7 +279,7 @@ export class SheetsService {
             fields: 'userEnteredFormat(backgroundColor,textFormat)',
           },
         },
-        // Format row 5 expense headers (A5, B5, C5) - light red/salmon background
+        // Format row 5 expense headers (A5, B5, C5, D5) - light red/salmon background
         {
           repeatCell: {
             range: {
@@ -287,7 +287,7 @@ export class SheetsService {
               startRowIndex: 4, // Row 5 (0-indexed)
               endRowIndex: 5,
               startColumnIndex: 0, // Column A (0-indexed)
-              endColumnIndex: 3, // Column C (exclusive) - D5 (Description) excluded
+              endColumnIndex: 4, // Column D (exclusive) - includes Date, Type, Amount, Description
             },
             cell: {
               userEnteredFormat: {
@@ -295,31 +295,6 @@ export class SheetsService {
                   red: 0.96,
                   green: 0.8,
                   blue: 0.8,
-                },
-                textFormat: {
-                  bold: true,
-                },
-              },
-            },
-            fields: 'userEnteredFormat(backgroundColor,textFormat)',
-          },
-        },
-        // Format D5 (Description) - bold text only, no background color
-        {
-          repeatCell: {
-            range: {
-              sheetId: sheetId,
-              startRowIndex: 4, // Row 5 (0-indexed)
-              endRowIndex: 5,
-              startColumnIndex: 3, // Column D (0-indexed)
-              endColumnIndex: 4, // Column D (exclusive)
-            },
-            cell: {
-              userEnteredFormat: {
-                backgroundColor: {
-                  red: 1.0,
-                  green: 1.0,
-                  blue: 1.0,
                 },
                 textFormat: {
                   bold: true,
@@ -778,17 +753,26 @@ export class SheetsService {
   /**
    * Resets a sheet to initial state - clears all data and sets up new structure
    * @param sheetName The name of the sheet to reset
+   * @param targetExpense Optional target expense value (defaults to 150000)
    * @returns Object with reset result information
    */
-  async resetSheetToInitialState(sheetName: string): Promise<{ success: boolean; message: string }> {
+  async resetSheetToInitialState(sheetName: string, targetExpense: number = 150000): Promise<{ success: boolean; message: string }> {
     try {
+      // Temporarily store the original target expense
+      const originalTargetExpense = this.targetExpense;
+      
+      // Set the target expense for this reset
+      this.targetExpense = targetExpense;
+      
       // Check if sheet exists, create if not
       const sheetNames = await this.getAllSheetNames();
       if (!sheetNames.includes(sheetName)) {
         await this.ensureMonthlySheetExists(sheetName);
+        // Restore original target expense
+        this.targetExpense = originalTargetExpense;
         return {
           success: true,
-          message: `Sheet "${sheetName}" created and initialized.`
+          message: `Sheet "${sheetName}" created and initialized with target expense Rs${targetExpense.toLocaleString()}.`
         };
       }
 
@@ -798,12 +782,15 @@ export class SheetsService {
         range: `${sheetName}!A:Z`, // Clear a wide range to ensure all data is removed
       });
 
-      // Set up new structure from scratch
+      // Set up new structure from scratch with the specified target expense
       await this.initializeSheetStructure(sheetName);
+      
+      // Restore original target expense
+      this.targetExpense = originalTargetExpense;
 
       return {
         success: true,
-        message: `Sheet "${sheetName}" has been reset to initial state. All data cleared.`
+        message: `Sheet "${sheetName}" has been reset to initial state. Target expense set to Rs${targetExpense.toLocaleString()}. All data cleared.`
       };
     } catch (error: any) {
       console.error('Error resetting sheet:', error.message);

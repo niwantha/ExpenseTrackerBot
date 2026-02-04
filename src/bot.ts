@@ -261,7 +261,8 @@ Example: /start
         try {
           await bot.answerCallbackQuery(query.id, { text: 'Resetting sheet...' });
           
-          const result = await sheetsService.resetSheetToInitialState(sheetName);
+          // Reset sheet with target expense of 150000
+          const result = await sheetsService.resetSheetToInitialState(sheetName, 150000);
           
           if (result.success) {
             bot.sendMessage(chatId, `✅ ${result.message}`);

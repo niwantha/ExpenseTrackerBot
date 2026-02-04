@@ -3,12 +3,76 @@ import * as dotenv from 'dotenv';
 import { SheetsService } from './sheets';
 import { parseExpenseMessage, formatExpense } from './parser';
 import { BotConfig, EXPENSE_TYPES } from './types';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Load environment variables
 dotenv.config();
 
 // Temporary storage for pending expenses (callbackId -> expense data)
 const pendingExpenses = new Map<string, { amount: number; description: string; username?: string; date: string }>();
+
+// Approved users storage (Set of user IDs)
+const approvedUsers = new Set<number>();
+
+// File to persist approved users
+const APPROVED_USERS_FILE = path.join(process.cwd(), 'approved_users.json');
+
+/**
+ * Load approved users from file
+ */
+function loadApprovedUsers(): void {
+  try {
+    if (fs.existsSync(APPROVED_USERS_FILE)) {
+      const data = fs.readFileSync(APPROVED_USERS_FILE, 'utf8');
+      const userIds = JSON.parse(data) as number[];
+      userIds.forEach(id => approvedUsers.add(id));
+      console.log(`✓ Loaded ${approvedUsers.size} approved user(s)`);
+    }
+  } catch (error: any) {
+    console.warn('⚠️ Could not load approved users file:', error.message);
+  }
+}
+
+/**
+ * Save approved users to file
+ */
+function saveApprovedUsers(): void {
+  try {
+    const userIds = Array.from(approvedUsers);
+    fs.writeFileSync(APPROVED_USERS_FILE, JSON.stringify(userIds, null, 2));
+  } catch (error: any) {
+    console.error('Error saving approved users:', error.message);
+  }
+}
+
+/**
+ * Check if a user is approved
+ * Admins are always approved
+ */
+function isUserApproved(userId: number, adminUserId?: number): boolean {
+  // Admin is always approved
+  if (adminUserId && userId === adminUserId) {
+    return true;
+  }
+  return approvedUsers.has(userId);
+}
+
+/**
+ * Approve a user
+ */
+function approveUser(userId: number): void {
+  approvedUsers.add(userId);
+  saveApprovedUsers();
+}
+
+/**
+ * Remove approval from a user
+ */
+function removeApproval(userId: number): void {
+  approvedUsers.delete(userId);
+  saveApprovedUsers();
+}
 
 /**
  * Creates an inline keyboard with expense type buttons
@@ -64,12 +128,15 @@ function loadConfig(): BotConfig {
     throw new Error('GOOGLE_SHEET_ID is not set in environment variables');
   }
 
+  const adminUserId = process.env.ADMIN_USER_ID ? parseInt(process.env.ADMIN_USER_ID, 10) : undefined;
+
   return {
     telegramToken,
     googleCredentialsPath,
     googleSheetId,
     sheetName,
-    targetExpense
+    targetExpense,
+    adminUserId
   };
 }
 
@@ -96,6 +163,19 @@ async function main() {
     // Initialize the sheet with headers
     await sheetsService.initializeSheet();
     console.log('✓ Sheet initialized');
+
+    // Load approved users
+    loadApprovedUsers();
+    
+    // If admin user ID is set, automatically approve them and log it
+    if (config.adminUserId) {
+      approveUser(config.adminUserId);
+      console.log(`✓ Admin user ${config.adminUserId} is approved`);
+      console.log(`  Note: Admin users are always approved, even if not in approved_users.json`);
+    } else {
+      console.warn('⚠️  ADMIN_USER_ID not set in .env file. Admin commands will not work.');
+      console.warn('  To set admin: Add ADMIN_USER_ID=your_telegram_user_id to your .env file');
+    }
 
     // Create bot instance
     const bot = new TelegramBot(config.telegramToken, { polling: true });
@@ -152,9 +232,67 @@ async function main() {
       console.warn('Commands will still work, but autocomplete may not be available');
     }
 
+    /**
+     * Check if user is approved, send message if not
+     */
+    const checkApproval = (msg: TelegramBot.Message): boolean => {
+      const userId = msg.from?.id;
+      if (!userId) return false;
+
+      // Check approval (admins are always approved)
+      if (!isUserApproved(userId, config.adminUserId)) {
+        const chatId = msg.chat.id;
+        bot.sendMessage(
+          chatId,
+          `🔒 *Access Denied*\n\n` +
+          `You are not approved to use this bot yet.\n\n` +
+          `Please contact the administrator to get access.\n\n` +
+          `Your User ID: \`${userId}\``,
+          { parse_mode: 'Markdown' }
+        );
+        return false;
+      }
+      return true;
+    };
+
+    /**
+     * Check if user is admin
+     */
+    const isAdmin = (userId: number | undefined): boolean => {
+      return userId !== undefined && userId === config.adminUserId;
+    };
+
     // Handle /start command
     bot.onText(/\/start/, (msg) => {
       const chatId = msg.chat.id;
+      const userId = msg.from?.id;
+      
+      if (!userId) {
+        bot.sendMessage(chatId, '❌ Could not identify user.');
+        return;
+      }
+
+      // If user is not approved, show approval request message
+      if (!isUserApproved(userId, config.adminUserId)) {
+        const monthName = sheetsService.getCurrentMonthName();
+        bot.sendMessage(
+          chatId,
+          `👋 Welcome to Expense Tracker Bot! 💰\n\n` +
+          `🔒 *Access Required*\n\n` +
+          `You need approval to use this bot.\n\n` +
+          `Your User ID: \`${userId}\`\n\n` +
+          `Please contact the administrator with your User ID to get access.\n\n` +
+          `Once approved, you'll be able to:\n` +
+          `• Log expenses with /ex or /expense\n` +
+          `• View totals with /total\n` +
+          `• Manage your budget\n\n` +
+          `Expenses are organized by month (currently: ${monthName})`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
+      // User is approved, show welcome message
       const monthName = sheetsService.getCurrentMonthName();
       const welcomeMessage = `
 Welcome to Expense Tracker Bot! 💰
@@ -185,6 +323,7 @@ Other commands:
 
     // Handle /help command
     bot.onText(/\/help/, (msg) => {
+      if (!checkApproval(msg)) return;
       const chatId = msg.chat.id;
       const monthName = sheetsService.getCurrentMonthName();
       const helpMessage = `
@@ -263,6 +402,7 @@ Example: /start
 
     // Handle /total command (current month)
     bot.onText(/\/total$/, async (msg) => {
+      if (!checkApproval(msg)) return;
       const chatId = msg.chat.id;
       try {
         const total = await sheetsService.getTotalExpenses();
@@ -276,6 +416,7 @@ Example: /start
 
     // Handle /total_all command (all months)
     bot.onText(/\/total_all/, async (msg) => {
+      if (!checkApproval(msg)) return;
       const chatId = msg.chat.id;
       try {
         const total = await sheetsService.getTotalAllExpenses();
@@ -288,6 +429,7 @@ Example: /start
 
     // Handle /set_target command
     bot.onText(/\/set_target/, async (msg) => {
+      if (!checkApproval(msg)) return;
       const chatId = msg.chat.id;
       const text = msg.text || '';
 
@@ -316,6 +458,7 @@ Example: /start
 
     // Handle /setup_sheet command
     bot.onText(/\/setup_sheet/, async (msg) => {
+      if (!checkApproval(msg)) return;
       const chatId = msg.chat.id;
       const monthName = sheetsService.getCurrentMonthName();
 
@@ -345,6 +488,12 @@ Example: /start
 
       // Handle expense type selection
       if (data?.startsWith('exp_type_')) {
+        const userId = query.from?.id;
+        if (!userId || !isUserApproved(userId, config.adminUserId)) {
+          await bot.answerCallbackQuery(query.id, { text: '❌ You are not approved to use this bot' });
+          return;
+        }
+        
         try {
           // Parse callback data: exp_type_<callbackId>_<type>
           // Find the last underscore to separate callbackId and type
@@ -437,8 +586,16 @@ Example: /start
           bot.sendMessage(chatId, `❌ Failed to reset sheet: ${error.message}`);
         }
       } else if (data === 'setup_cancel') {
+        const userId = query.from?.id;
+        if (!userId || !isUserApproved(userId, config.adminUserId)) {
+          await bot.answerCallbackQuery(query.id, { text: '❌ You are not approved to use this bot' });
+          return;
+        }
         await bot.answerCallbackQuery(query.id, { text: 'Cancelled' });
-        bot.sendMessage(chatId, '❌ Sheet reset cancelled.');
+        const chatId = query.message?.chat.id;
+        if (chatId) {
+          bot.sendMessage(chatId, '❌ Sheet reset cancelled.');
+        }
       }
     });
 
@@ -446,6 +603,7 @@ Example: /start
      * Handles expense command (both /expense and /ex)
      */
     const handleExpenseCommand = async (msg: TelegramBot.Message) => {
+      if (!checkApproval(msg)) return;
       const chatId = msg.chat.id;
       const text = msg.text || '';
       const username = msg.from?.username || msg.from?.first_name || 'Unknown';
@@ -524,6 +682,156 @@ Example: /start
 
     // Handle /ex command (short alias)
     bot.onText(/^\/ex(\s|$)/, handleExpenseCommand);
+
+    // ========== ADMIN COMMANDS ==========
+    
+    // Handle /approve command (admin only)
+    bot.onText(/\/approve(?:\s+(\d+))?/, async (msg) => {
+      const userId = msg.from?.id;
+      const chatId = msg.chat.id;
+
+      if (!isAdmin(userId)) {
+        bot.sendMessage(chatId, '❌ Access denied. Admin only.');
+        return;
+      }
+
+      const text = msg.text || '';
+      // Try to match username or user ID
+      const match = text.match(/\/approve(?:\s+(\d+|\w+))?/);
+      let targetUserId: number | undefined;
+      
+      if (match?.[1]) {
+        const input = match[1];
+        // If it's a number, use it as user ID
+        if (/^\d+$/.test(input)) {
+          targetUserId = parseInt(input, 10);
+        } else {
+          // If it's a username, we can't approve by username - need user ID
+          bot.sendMessage(
+            chatId,
+            `❌ Please provide a User ID (number), not a username.\n\n` +
+            `Usage: /approve <user_id>\n\n` +
+            `Example: /approve 123456789\n\n` +
+            `To approve yourself: /approve ${userId}`,
+            { parse_mode: 'Markdown' }
+          );
+          return;
+        }
+      }
+
+      if (targetUserId) {
+        // Approve specific user ID
+        approveUser(targetUserId);
+        bot.sendMessage(chatId, `✅ User ${targetUserId} has been approved.`);
+      } else {
+        // Show usage with option to approve self
+        bot.sendMessage(
+          chatId,
+          `📋 *Approve User*\n\n` +
+          `Usage: /approve <user_id>\n\n` +
+          `Examples:\n` +
+          `• /approve 123456789 (approve another user)\n` +
+          `• /approve ${userId} (approve yourself)\n\n` +
+          `To get a user's ID, ask them to send /start and share their User ID.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    });
+
+    // Handle /unapprove command (admin only)
+    bot.onText(/\/unapprove(?:\s+(\d+))?/, async (msg) => {
+      const userId = msg.from?.id;
+      const chatId = msg.chat.id;
+
+      if (!isAdmin(userId)) {
+        bot.sendMessage(chatId, '❌ Access denied. Admin only.');
+        return;
+      }
+
+      const text = msg.text || '';
+      const match = text.match(/\/unapprove(?:\s+(\d+))?/);
+      const targetUserId = match?.[1] ? parseInt(match[1], 10) : undefined;
+
+      if (targetUserId) {
+        if (targetUserId === config.adminUserId) {
+          bot.sendMessage(chatId, '❌ Cannot unapprove the admin user.');
+          return;
+        }
+        removeApproval(targetUserId);
+        bot.sendMessage(chatId, `✅ User ${targetUserId} has been unapproved.`);
+      } else {
+        bot.sendMessage(
+          chatId,
+          `📋 *Unapprove User*\n\n` +
+          `Usage: /unapprove <user_id>\n\n` +
+          `Example: /unapprove 123456789`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    });
+
+    // Handle /list_approved command (admin only)
+    bot.onText(/\/list_approved/, async (msg) => {
+      const userId = msg.from?.id;
+      const chatId = msg.chat.id;
+
+      if (!isAdmin(userId)) {
+        bot.sendMessage(chatId, '❌ Access denied. Admin only.');
+        return;
+      }
+
+      const approvedList = Array.from(approvedUsers);
+      if (approvedList.length === 0) {
+        bot.sendMessage(chatId, '📋 No approved users yet.');
+        return;
+      }
+
+      const listText = approvedList
+        .map(id => `• ${id}${id === config.adminUserId ? ' (Admin)' : ''}`)
+        .join('\n');
+
+      bot.sendMessage(
+        chatId,
+        `📋 *Approved Users* (${approvedList.length})\n\n${listText}`,
+        { parse_mode: 'Markdown' }
+      );
+    });
+
+    // Handle /myinfo command (shows user's ID and admin status)
+    bot.onText(/\/myinfo/, async (msg) => {
+      const userId = msg.from?.id;
+      const chatId = msg.chat.id;
+      const username = msg.from?.username || 'Not set';
+
+      if (!userId) {
+        bot.sendMessage(chatId, '❌ Could not identify user.');
+        return;
+      }
+
+      const isUserAdmin = isAdmin(userId);
+      const isApproved = isUserApproved(userId, config.adminUserId);
+      const adminUserId = config.adminUserId;
+
+      let statusMessage = `👤 *Your Information*\n\n`;
+      statusMessage += `User ID: \`${userId}\`\n`;
+      statusMessage += `Username: @${username}\n\n`;
+      statusMessage += `Status:\n`;
+      statusMessage += `• Admin: ${isUserAdmin ? '✅ Yes' : '❌ No'}\n`;
+      statusMessage += `• Approved: ${isApproved ? '✅ Yes' : '❌ No'}\n\n`;
+
+      if (adminUserId) {
+        statusMessage += `Admin User ID (from .env): \`${adminUserId}\`\n`;
+        if (userId === adminUserId) {
+          statusMessage += `✅ You match the admin ID - you should have full access!\n`;
+        } else {
+          statusMessage += `⚠️ Your ID doesn't match. Check your .env file.\n`;
+        }
+      } else {
+        statusMessage += `⚠️ ADMIN_USER_ID not set in .env file.\n`;
+      }
+
+      bot.sendMessage(chatId, statusMessage, { parse_mode: 'Markdown' });
+    });
 
     // Handle polling errors
     bot.on('polling_error', (error) => {

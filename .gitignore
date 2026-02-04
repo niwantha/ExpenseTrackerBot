@@ -12,6 +12,9 @@ dist/
 # Credentials
 credentials.json
 
+# Approved users data
+approved_users.json
+
 # IDE
 .vscode/
 .idea/

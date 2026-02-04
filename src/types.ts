@@ -18,6 +18,7 @@ export interface BotConfig {
   googleSheetId: string;
   sheetName: string;
   targetExpense?: number;
+  adminUserId?: number;
 }
 
 /**

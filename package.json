@@ -1,0 +1,33 @@
+{
+  "name": "telegram-expense-tracker-bot",
+  "version": "1.0.0",
+  "description": "A Telegram bot that tracks daily expenses and logs them to Google Sheets",
+  "main": "dist/bot.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bot.js",
+    "dev": "ts-node src/bot.ts",
+    "watch": "tsc --watch",
+    "verify": "ts-node src/verify-setup.ts"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "expense",
+    "tracker",
+    "google-sheets"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "googleapis": "^131.0.0",
+    "dotenv": "^16.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "@types/node-telegram-bot-api": "^0.64.3",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2"
+  }
+}

@@ -1,7 +1,7 @@
 import { Expense, ParseResult } from './types';
 
 /**
- * Parses an expense message in the format: /expense <amount> <description>
+ * Parses an expense message in the format: /expense <amount> [<type>] <description>
  * @param text The message text to parse
  * @param username Optional username of the person who sent the message
  * @returns ParseResult with either the parsed expense or an error message
@@ -25,7 +25,7 @@ export function parseExpenseMessage(text: string, username?: string): ParseResul
   if (parts.length < 2) {
     return {
       success: false,
-      error: 'Invalid format. Use: /expense <amount> <description>'
+      error: 'Invalid format. Use: /expense <amount> [<type>] <description>'
     };
   }
 
@@ -41,8 +41,19 @@ export function parseExpenseMessage(text: string, username?: string): ParseResul
     };
   }
 
-  // Get description (rest of the parts)
-  const description = parts.slice(1).join(' ');
+  // If there are 3+ parts, treat second part as type, rest as description
+  // If there are 2 parts, treat all as description (no type)
+  let type: string | undefined;
+  let description: string;
+
+  if (parts.length >= 3) {
+    // Format: /expense <amount> <type> <description>
+    type = parts[1];
+    description = parts.slice(2).join(' ');
+  } else {
+    // Format: /expense <amount> <description>
+    description = parts.slice(1).join(' ');
+  }
 
   if (!description || description.trim().length === 0) {
     return {
@@ -56,6 +67,7 @@ export function parseExpenseMessage(text: string, username?: string): ParseResul
 
   const expense: Expense = {
     date,
+    type: type?.trim() || undefined,
     amount,
     description: description.trim(),
     username

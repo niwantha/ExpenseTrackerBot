@@ -3,6 +3,7 @@
  */
 export interface Expense {
   date: string;
+  type?: string;
   amount: number;
   description: string;
   username?: string;
@@ -16,6 +17,7 @@ export interface BotConfig {
   googleCredentialsPath: string;
   googleSheetId: string;
   sheetName: string;
+  targetExpense?: number;
 }
 
 /**

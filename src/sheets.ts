@@ -1,5 +1,5 @@
 import { google } from 'googleapis';
-import { Expense } from './types';
+import { Expense, EXPENSE_TYPES } from './types';
 import * as fs from 'fs';
 
 /**
@@ -199,11 +199,88 @@ export class SheetsService {
         },
       });
 
+      // Add type breakdown section (columns E-F, starting at row 14)
+      await this.initializeTypeBreakdown(sheetName);
+
       // Apply formatting
       await this.applySheetFormatting(sheetName);
     } catch (error: any) {
       console.error('Error initializing sheet structure:', error.message);
       throw error;
+    }
+  }
+
+  /**
+   * Initializes the type breakdown section (columns F-G, starting at row 14)
+   * @param sheetName The name of the sheet
+   */
+  private async initializeTypeBreakdown(sheetName: string): Promise<void> {
+    try {
+      // Filter out 'None' from the types list for the breakdown
+      const typesForBreakdown = EXPENSE_TYPES.filter(type => type !== 'None');
+      
+      // Create the breakdown data: type names in column F, SUMIF formulas in column G
+      const breakdownData = typesForBreakdown.map(type => [
+        type,
+        `=SUMIF(B6:B, "${type}", C6:C)`
+      ]);
+
+      // Write the breakdown starting at row 14 (F14:G14, F15:G15, etc.)
+      const startRow = 14;
+      const endRow = startRow + breakdownData.length - 1;
+      
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${sheetName}!F${startRow}:G${endRow}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: breakdownData,
+        },
+      });
+
+      // Apply currency formatting to column G (amounts)
+      try {
+        const spreadsheet = await this.sheets.spreadsheets.get({
+          spreadsheetId: this.spreadsheetId,
+        });
+        const sheet = spreadsheet.data.sheets?.find(
+          (s: any) => s.properties?.title === sheetName
+        );
+        if (sheet) {
+          const sheetId = sheet.properties?.sheetId;
+          await this.sheets.spreadsheets.batchUpdate({
+            spreadsheetId: this.spreadsheetId,
+            requestBody: {
+              requests: [{
+                repeatCell: {
+                  range: {
+                    sheetId: sheetId,
+                    startRowIndex: startRow - 1, // Row 14 (0-indexed, inclusive)
+                    endRowIndex: endRow + 1, // Row endRow+1 (0-indexed, exclusive) to include all rows
+                    startColumnIndex: 6, // Column G (0-indexed) - amounts only
+                    endColumnIndex: 7, // Column H (exclusive)
+                  },
+                  cell: {
+                    userEnteredFormat: {
+                      numberFormat: {
+                        type: 'CURRENCY',
+                        pattern: '"Rs"#,##0.00',
+                      },
+                    },
+                  },
+                  fields: 'userEnteredFormat.numberFormat',
+                },
+              }],
+            },
+          });
+        }
+      } catch (error: any) {
+        // Don't fail if formatting fails
+        console.warn('Could not apply currency formatting to type breakdown:', error.message);
+      }
+    } catch (error: any) {
+      console.error('Error initializing type breakdown:', error.message);
+      // Don't throw - this is not critical
     }
   }
 
@@ -441,6 +518,18 @@ export class SheetsService {
 
           await this.applySheetFormatting(this.sheetName);
           console.log('Added summary section to existing sheet');
+        }
+
+        // Check if type breakdown section exists
+        const breakdownResponse = await this.sheets.spreadsheets.values.get({
+          spreadsheetId: this.spreadsheetId,
+          range: `${this.sheetName}!F14:G14`,
+        });
+
+        if (!breakdownResponse.data.values || breakdownResponse.data.values.length === 0) {
+          // Add type breakdown section if missing
+          await this.initializeTypeBreakdown(this.sheetName);
+          console.log('Added type breakdown section to existing sheet');
         }
       }
     } catch (error: any) {

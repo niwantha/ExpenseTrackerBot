@@ -66,6 +66,53 @@ async function main() {
     const bot = new TelegramBot(config.telegramToken, { polling: true });
     console.log('✓ Telegram bot initialized');
 
+    // Register bot commands for autocomplete suggestions
+    // Note: Clicking a command suggestion inserts it into the input field (doesn't send)
+    // Users can then add parameters and press Enter to send
+    const commands = [
+      {
+        command: 'expense',
+        description: 'Log expense: /expense <amount> <description>'
+      },
+      {
+        command: 'total',
+        description: 'Show current month total'
+      },
+      {
+        command: 'total_all',
+        description: 'Show all-time total'
+      },
+      {
+        command: 'set_target',
+        description: 'Set budget: /set_target <amount>'
+      },
+      {
+        command: 'setup_sheet',
+        description: 'Reset sheet (clears all data)'
+      },
+      {
+        command: 'help',
+        description: 'Show help with all commands'
+      },
+      {
+        command: 'start',
+        description: 'Show welcome message'
+      }
+    ];
+
+    try {
+      // Register commands for private chats (default)
+      await bot.setMyCommands(commands);
+      console.log('✓ Bot commands registered for private chats');
+      
+      // Also register commands for group chats
+      await bot.setMyCommands(commands, { scope: { type: 'all_group_chats' } });
+      console.log('✓ Bot commands registered for group chats');
+    } catch (error: any) {
+      console.warn('⚠️ Could not register bot commands:', error.message);
+      console.warn('Commands will still work, but autocomplete may not be available');
+    }
+
     // Handle /start command
     bot.onText(/\/start/, (msg) => {
       const chatId = msg.chat.id;
@@ -285,11 +332,35 @@ Example: /start
       const text = msg.text || '';
       const username = msg.from?.username || msg.from?.first_name || 'Unknown';
 
+      // Check if only /expense was sent without parameters
+      const trimmedText = text.trim();
+      if (trimmedText === '/expense' || /^\/expense(@\w+)?$/.test(trimmedText)) {
+        bot.sendMessage(
+          chatId,
+          `💡 *Tip:* After selecting /expense from suggestions, add your amount and description before sending.\n\n` +
+          `*Format:* /expense <amount> [<type>] <description>\n\n` +
+          `*Examples:*\n` +
+          `• /expense 50 groceries\n` +
+          `• /expense 100 food lunch at restaurant\n` +
+          `• /expense 25 transport taxi ride`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
       // Parse the expense message
       const parseResult = parseExpenseMessage(text, username);
 
       if (!parseResult.success) {
-        bot.sendMessage(chatId, `❌ ${parseResult.error}\n\nUse: /expense <amount> <description>`);
+        bot.sendMessage(
+          chatId,
+          `❌ ${parseResult.error}\n\n` +
+          `*Format:* /expense <amount> [<type>] <description>\n\n` +
+          `*Examples:*\n` +
+          `• /expense 50 groceries\n` +
+          `• /expense 100 food lunch at restaurant`,
+          { parse_mode: 'Markdown' }
+        );
         return;
       }
 

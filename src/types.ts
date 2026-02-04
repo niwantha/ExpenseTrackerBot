@@ -21,6 +21,24 @@ export interface BotConfig {
 }
 
 /**
+ * Predefined expense types
+ */
+export const EXPENSE_TYPES = [
+  'Super Market',
+  'Fuel',
+  'Car Repair',
+  'Pharmacy',
+  'Rent',
+  'Other',
+  'None',
+  'Salon',
+  'Hospital',
+  'Bruno',
+  'Bills',
+  'Car'
+] as const;
+
+/**
  * Result of parsing an expense message
  */
 export interface ParseResult {

@@ -2,10 +2,45 @@ import TelegramBot from 'node-telegram-bot-api';
 import * as dotenv from 'dotenv';
 import { SheetsService } from './sheets';
 import { parseExpenseMessage, formatExpense } from './parser';
-import { BotConfig } from './types';
+import { BotConfig, EXPENSE_TYPES } from './types';
 
 // Load environment variables
 dotenv.config();
+
+// Temporary storage for pending expenses (callbackId -> expense data)
+const pendingExpenses = new Map<string, { amount: number; description: string; username?: string; date: string }>();
+
+/**
+ * Creates an inline keyboard with expense type buttons
+ * @param callbackId Unique ID to identify this expense selection
+ * @returns Inline keyboard markup
+ */
+function createTypeSelectionKeyboard(callbackId: string): TelegramBot.InlineKeyboardMarkup {
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  
+  // Arrange types in 3 columns
+  for (let i = 0; i < EXPENSE_TYPES.length; i += 3) {
+    const row: TelegramBot.InlineKeyboardButton[] = [];
+    for (let j = 0; j < 3 && i + j < EXPENSE_TYPES.length; j++) {
+      const type = EXPENSE_TYPES[i + j];
+      row.push({
+        text: type,
+        callback_data: `exp_type_${callbackId}_${type}`
+      });
+    }
+    buttons.push(row);
+  }
+  
+  // Add Skip button at the end
+  buttons.push([{
+    text: '⏭️ Skip',
+    callback_data: `exp_type_${callbackId}_None`
+  }]);
+  
+  return {
+    inline_keyboard: buttons
+  };
+}
 
 /**
  * Loads configuration from environment variables
@@ -75,6 +110,10 @@ async function main() {
         description: 'Log expense: /expense <amount> <description>'
       },
       {
+        command: 'ex',
+        description: 'Log expense (short): /ex <amount> <description>'
+      },
+      {
         command: 'total',
         description: 'Show current month total'
       },
@@ -121,13 +160,15 @@ async function main() {
 Welcome to Expense Tracker Bot! 💰
 
 To log an expense, use the following format:
-/expense <amount> [<type>] <description>
+/expense <amount> [description]
+/ex <amount> [description] (short)
 
 Examples:
+• /ex 500
+• /ex 500 food
 • /expense 50 groceries
-• /expense 20.5 lunch at cafe
-• /expense 100 food electricity bill
-• /expense 50 transport taxi
+
+After sending, you'll be asked to select a type.
 
 Expenses are organized by month (currently: ${monthName})
 
@@ -153,14 +194,15 @@ Other commands:
 
 📝 Expense Management:
 
-/expense <amount> [<type>] <description>
+/expense <amount> [description]
+/ex <amount> [description] (short)
 Log a new expense to ${monthName} sheet
+(Description is optional. Type will be selected via buttons.)
 
 Examples:
+• /ex 500
+• /ex 500 food
 • /expense 50 groceries
-• /expense 100 food lunch at restaurant
-• /expense 25 transport taxi ride
-• /expense 1500 utilities electricity bill
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -294,13 +336,87 @@ Example: /start
       );
     });
 
-    // Handle callback queries for setup confirmation
+    // Handle callback queries for setup confirmation and type selection
     bot.on('callback_query', async (query) => {
       const chatId = query.message?.chat.id;
       const data = query.data;
 
       if (!chatId) return;
 
+      // Handle expense type selection
+      if (data?.startsWith('exp_type_')) {
+        try {
+          // Parse callback data: exp_type_<callbackId>_<type>
+          // Find the last underscore to separate callbackId and type
+          const dataWithoutPrefix = data.replace('exp_type_', '');
+          const lastUnderscoreIndex = dataWithoutPrefix.lastIndexOf('_');
+          
+          if (lastUnderscoreIndex === -1) {
+            throw new Error('Invalid callback data format');
+          }
+          
+          const callbackId = dataWithoutPrefix.substring(0, lastUnderscoreIndex);
+          const type = dataWithoutPrefix.substring(lastUnderscoreIndex + 1);
+
+          // Get pending expense data
+          const expenseData = pendingExpenses.get(callbackId);
+          
+          if (!expenseData) {
+            await bot.answerCallbackQuery(query.id, { text: '❌ Expense data not found. Please try again.' });
+            return;
+          }
+
+          // Create expense with selected type
+          const expense = {
+            date: expenseData.date,
+            type: type === 'None' ? undefined : type,
+            amount: expenseData.amount,
+            description: expenseData.description,
+            username: expenseData.username || query.from?.username || query.from?.first_name || 'Unknown'
+          };
+
+          // Log the expense
+          await sheetsService.logExpense(expense);
+          
+          // Clear pending expense
+          pendingExpenses.delete(callbackId);
+
+          // Answer callback query
+          await bot.answerCallbackQuery(query.id, { text: `✅ Expense logged${type === 'None' ? '' : ` with type: ${type}`}` });
+
+          // Send confirmation message
+          const typeText = type === 'None' ? '' : ` (${type})`;
+          const descriptionText = expenseData.description 
+            ? ` for ${expenseData.description}` 
+            : '';
+          bot.sendMessage(chatId, `✅ Expense logged: $${expenseData.amount.toFixed(2)}${descriptionText}${typeText}`);
+
+          // Edit the original message to remove buttons
+          if (query.message) {
+            try {
+              const descriptionText = expenseData.description 
+                ? ` - ${expenseData.description}` 
+                : '';
+              await bot.editMessageText(
+                `💰 Expense: $${expenseData.amount.toFixed(2)}${descriptionText}\n\n✅ Type selected: ${type === 'None' ? 'No type' : type}`,
+                {
+                  chat_id: chatId,
+                  message_id: query.message.message_id
+                }
+              );
+            } catch (editError) {
+              // Ignore edit errors (message might be too old or already edited)
+            }
+          }
+        } catch (error: any) {
+          console.error('Error handling type selection:', error);
+          await bot.answerCallbackQuery(query.id, { text: '❌ Error logging expense' });
+          bot.sendMessage(chatId, '❌ Failed to log expense. Please try again.');
+        }
+        return;
+      }
+
+      // Handle setup sheet reset
       if (data?.startsWith('setup_reset_')) {
         // Extract sheet name (may contain spaces, so decode it)
         const sheetName = decodeURIComponent(data.replace('setup_reset_', ''));
@@ -326,23 +442,30 @@ Example: /start
       }
     });
 
-    // Handle /expense command
-    bot.onText(/\/expense/, async (msg) => {
+    /**
+     * Handles expense command (both /expense and /ex)
+     */
+    const handleExpenseCommand = async (msg: TelegramBot.Message) => {
       const chatId = msg.chat.id;
       const text = msg.text || '';
       const username = msg.from?.username || msg.from?.first_name || 'Unknown';
 
-      // Check if only /expense was sent without parameters
+      // Check if only command was sent without parameters
       const trimmedText = text.trim();
-      if (trimmedText === '/expense' || /^\/expense(@\w+)?$/.test(trimmedText)) {
+      const isExpense = /^\/expense(@\w+)?$/.test(trimmedText);
+      const isEx = /^\/ex(@\w+)?$/.test(trimmedText);
+      
+      if (isExpense || isEx) {
         bot.sendMessage(
           chatId,
-          `💡 *Tip:* After selecting /expense from suggestions, add your amount and description before sending.\n\n` +
-          `*Format:* /expense <amount> [<type>] <description>\n\n` +
+          `💡 *Tip:* After selecting the command from suggestions, add your amount (and optional description) before sending.\n\n` +
+          `*Format:* /expense <amount> [description]\n` +
+          `*Short:* /ex <amount> [description]\n\n` +
           `*Examples:*\n` +
-          `• /expense 50 groceries\n` +
-          `• /expense 100 food lunch at restaurant\n` +
-          `• /expense 25 transport taxi ride`,
+          `• /expense 50\n` +
+          `• /ex 500 food\n` +
+          `• /ex 25 transport taxi ride\n\n` +
+          `After sending, you'll be asked to select a type.`,
           { parse_mode: 'Markdown' }
         );
         return;
@@ -355,25 +478,52 @@ Example: /start
         bot.sendMessage(
           chatId,
           `❌ ${parseResult.error}\n\n` +
-          `*Format:* /expense <amount> [<type>] <description>\n\n` +
+          `*Format:* /expense <amount> [description]\n` +
+          `*Short:* /ex <amount> [description]\n\n` +
           `*Examples:*\n` +
-          `• /expense 50 groceries\n` +
-          `• /expense 100 food lunch at restaurant`,
+          `• /ex 500\n` +
+          `• /ex 500 food\n` +
+          `• /expense 50 groceries`,
           { parse_mode: 'Markdown' }
         );
         return;
       }
 
-      // Log the expense to Google Sheets
-      try {
-        await sheetsService.logExpense(parseResult.expense!);
-        const formattedExpense = formatExpense(parseResult.expense!);
-        bot.sendMessage(chatId, `✅ Expense logged: ${formattedExpense}`);
-      } catch (error: any) {
-        console.error('Error logging expense:', error);
-        bot.sendMessage(chatId, '❌ Failed to log expense. Please check the bot logs.');
-      }
-    });
+      const expense = parseResult.expense!;
+
+      // Always show type selection (type is never parsed from command)
+      const expenseData = {
+        amount: expense.amount,
+        description: expense.description,
+        username: expense.username,
+        date: expense.date
+      };
+
+      // Generate unique callback ID (chatId + timestamp)
+      const callbackId = `${chatId}_${Date.now()}`;
+
+      // Store pending expense
+      pendingExpenses.set(callbackId, expenseData);
+
+      // Show type selection buttons
+      const descriptionText = expense.description 
+        ? ` - ${expense.description}` 
+        : '';
+      bot.sendMessage(
+        chatId,
+        `💰 Expense: $${expense.amount.toFixed(2)}${descriptionText}\n\n` +
+        `Select expense type:`,
+        {
+          reply_markup: createTypeSelectionKeyboard(callbackId)
+        }
+      );
+    };
+
+    // Handle /expense command
+    bot.onText(/\/expense/, handleExpenseCommand);
+
+    // Handle /ex command (short alias)
+    bot.onText(/^\/ex(\s|$)/, handleExpenseCommand);
 
     // Handle polling errors
     bot.on('polling_error', (error) => {

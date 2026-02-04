@@ -1,7 +1,8 @@
 import { Expense, ParseResult } from './types';
 
 /**
- * Parses an expense message in the format: /expense <amount> [<type>] <description>
+ * Parses an expense message in the format: /expense <amount> [description]
+ * Type is selected via buttons, not from the command text.
  * @param text The message text to parse
  * @param username Optional username of the person who sent the message
  * @returns ParseResult with either the parsed expense or an error message
@@ -10,22 +11,38 @@ export function parseExpenseMessage(text: string, username?: string): ParseResul
   // Remove leading/trailing whitespace
   const trimmed = text.trim();
 
-  // Check if message starts with /expense
-  if (!trimmed.startsWith('/expense')) {
+  // Check if message starts with /expense or /ex
+  let commandLength = 0;
+  if (trimmed.startsWith('/expense')) {
+    commandLength = 8; // '/expense'.length
+  } else if (trimmed.startsWith('/ex ')) {
+    commandLength = 3; // '/ex '.length
+  } else if (trimmed.startsWith('/ex@')) {
+    // Handle /ex@botname format
+    const match = trimmed.match(/^\/ex@\w+\s/);
+    if (match) {
+      commandLength = match[0].length;
+    } else {
+      return {
+        success: false,
+        error: 'Message must start with /expense or /ex'
+      };
+    }
+  } else {
     return {
       success: false,
-      error: 'Message must start with /expense'
+      error: 'Message must start with /expense or /ex'
     };
   }
 
-  // Remove the /expense command and split the rest
-  const parts = trimmed.slice(8).trim().split(/\s+/);
+  // Remove the command and split the rest
+  const parts = trimmed.slice(commandLength).trim().split(/\s+/);
 
-  // Need at least amount and description
-  if (parts.length < 2) {
+  // Need at least amount
+  if (parts.length < 1 || parts[0].trim().length === 0) {
     return {
       success: false,
-      error: 'Invalid format. Use: /expense <amount> [<type>] <description>'
+      error: 'Invalid format. Use: /expense <amount> [description]'
     };
   }
 
@@ -41,25 +58,14 @@ export function parseExpenseMessage(text: string, username?: string): ParseResul
     };
   }
 
-  // If there are 3+ parts, treat second part as type, rest as description
-  // If there are 2 parts, treat all as description (no type)
-  let type: string | undefined;
-  let description: string;
+  // Description is optional - if provided, use it
+  // Format: /expense <amount> [description]
+  // Note: We don't parse type from command anymore - type is selected via buttons
+  let description: string = '';
 
-  if (parts.length >= 3) {
-    // Format: /expense <amount> <type> <description>
-    type = parts[1];
-    description = parts.slice(2).join(' ');
-  } else {
+  if (parts.length >= 2) {
     // Format: /expense <amount> <description>
-    description = parts.slice(1).join(' ');
-  }
-
-  if (!description || description.trim().length === 0) {
-    return {
-      success: false,
-      error: 'Description cannot be empty.'
-    };
+    description = parts.slice(1).join(' ').trim();
   }
 
   // Get current date in YYYY-MM-DD format
@@ -67,9 +73,9 @@ export function parseExpenseMessage(text: string, username?: string): ParseResul
 
   const expense: Expense = {
     date,
-    type: type?.trim() || undefined,
+    type: undefined, // Type is always selected via buttons, not from command
     amount,
-    description: description.trim(),
+    description: description || '', // Description is optional
     username
   };
 
@@ -85,5 +91,8 @@ export function parseExpenseMessage(text: string, username?: string): ParseResul
  * @returns Formatted string representation
  */
 export function formatExpense(expense: Expense): string {
-  return `$${expense.amount.toFixed(2)} for ${expense.description}`;
+  const descriptionText = expense.description 
+    ? ` for ${expense.description}` 
+    : '';
+  return `$${expense.amount.toFixed(2)}${descriptionText}`;
 }
